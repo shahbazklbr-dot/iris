@@ -8,27 +8,24 @@ app = Flask(__name__)
 UPLOAD_FOLDER = 'uploads'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-# Simple HTML Upload Page
 HTML = '''
 <!doctype html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Iris Pupil Breathing</title>
     <style>
-        body { font-family: Arial, sans-serif; text-align: center; padding: 50px; background: #f4f7fc; }
-        h1 { color: #000; }
-        input[type="file"] { margin: 20px; }
-        input[type="submit"] { padding: 12px 30px; font-size: 16px; background: #ff0000; color: white; border: none; border-radius: 8px; cursor: pointer; }
+        body {font-family: Arial, sans-serif; text-align:center; padding:60px; background:#f4f7fc;}
+        h1 {color:#000;}
+        input[type="file"] {margin:20px;}
+        input[type="submit"] {padding:14px 30px; font-size:17px; background:#ff0000; color:white; border:none; border-radius:8px; cursor:pointer;}
     </style>
 </head>
 <body>
-    <h1>Upload Iris Image</h1>
-    <p>Select your iris JPG/PNG image</p>
+    <h1>Upload Your Iris Image</h1>
+    <p>JPG ya PNG image upload karo</p>
     <form method="post" enctype="multipart/form-data">
         <input type="file" name="file" accept="image/*" required><br><br>
-        <input type="submit" value="Create Pupil Breathing Animation">
+        <input type="submit" value="Create Real Pupil Breathing Animation">
     </form>
 </body>
 </html>
@@ -50,7 +47,7 @@ def upload_file():
 
         try:
             output_path = create_real_pupil_breathing(filepath)
-            return send_file(output_path, as_attachment=True, download_name="iris_pupil_breathing.mp4")
+            return send_file(output_path, as_attachment=True, download_name="real_pupil_breathing.mp4")
         except Exception as e:
             return f"Error: {str(e)}"
 
@@ -60,35 +57,37 @@ def upload_file():
 def create_real_pupil_breathing(input_path):
     img = cv2.imread(input_path)
     if img is None:
-        raise Exception("Could not read image")
+        raise Exception("Image could not be loaded")
 
     h, w = img.shape[:2]
     original = img.copy()
 
-    # Pupil Detection
+    # Better Pupil Detection
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    blurred = cv2.GaussianBlur(gray, (9, 9), 0)
-    _, thresh = cv2.threshold(blurred, 45, 255, cv2.THRESH_BINARY_INV)
+    blurred = cv2.GaussianBlur(gray, (11, 11), 0)
 
-    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    # Hough Circle Detection for pupil
+    circles = cv2.HoughCircles(blurred, cv2.HOUGH_GRADIENT, 1, 50,
+                               param1=50, param2=30, minRadius=15, maxRadius=80)
 
-    if contours:
-        largest = max(contours, key=cv2.contourArea)
-        (x, y), radius = cv2.minEnclosingCircle(largest)
-        center = (int(x), int(y))
-        pupil_radius = int(radius * 0.82)
+    if circles is not None:
+        circles = np.round(circles[0, :]).astype("int")
+        # Sabse bada circle (pupil) le lo
+        x, y, radius = circles[0]
+        center = (x, y)
+        pupil_radius = int(radius * 0.85)
     else:
+        # Fallback
         center = (w//2, h//2)
         pupil_radius = int(min(w, h) * 0.18)
 
-    # Video Output
-    output_path = input_path.rsplit('.', 1)[0] + "_breathing.mp4"
+    output_path = input_path.rsplit('.', 1)[0] + "_real_breathing.mp4"
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out = cv2.VideoWriter(output_path, fourcc, 25, (w, h))
 
-    for i in range(200):   # ~8 seconds
+    for i in range(220):   # ~8.8 seconds
         frame = original.copy()
-        scale = 1 + 0.20 * np.sin(2 * np.pi * i / 50)   # Natural slow breathing
+        scale = 1 + 0.24 * np.sin(2 * np.pi * i / 55)   # Natural breathing speed
 
         new_radius = int(pupil_radius * scale)
 
@@ -96,11 +95,13 @@ def create_real_pupil_breathing(input_path):
         mask = np.zeros((h, w), dtype=np.uint8)
         cv2.circle(mask, center, new_radius, 255, -1)
 
-        # Extract and resize pupil region
-        pupil_area = cv2.bitwise_and(frame, frame, mask=mask)
-        resized_pupil = cv2.resize(pupil_area, None, fx=scale, fy=scale, interpolation=cv2.INTER_LINEAR)
+        # Extract pupil region
+        pupil_region = cv2.bitwise_and(frame, frame, mask=mask)
 
-        # Place back the resized pupil
+        # Resize only pupil region
+        resized_pupil = cv2.resize(pupil_region, None, fx=scale, fy=scale, interpolation=cv2.INTER_LINEAR)
+
+        # Place back the resized pupil at center
         rh, rw = resized_pupil.shape[:2]
         x1 = max(0, center[0] - rw // 2)
         y1 = max(0, center[1] - rh // 2)
