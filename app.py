@@ -1,93 +1,103 @@
-from flask import Flask, request, send_file, render_template_string
 import cv2
 import numpy as np
 import os
-from werkzeug.utils import secure_filename
+from tkinter import Tk, filedialog, messagebox
 
-app = Flask(__name__)
-UPLOAD_FOLDER = 'uploads'
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-
-HTML = '''
-<!doctype html>
-<html>
-<head><title>Iris Pupil Animation</title></head>
-<body style="font-family:Arial; text-align:center; padding:50px;">
-    <h1>Upload Iris Image</h1>
-    <p>JPG ya PNG image upload karo</p>
-    <form method="post" enctype="multipart/form-data">
-        <input type="file" name="file" accept="image/*"><br><br>
-        <input type="submit" value="Upload & Create Breathing Animation" style="padding:10px 20px; font-size:16px;">
-    </form>
-</body>
-</html>
-'''
-
-@app.route('/', methods=['GET', 'POST'])
-def upload_file():
-    if request.method == 'POST':
-        if 'file' not in request.files:
-            return 'No file part'
-        file = request.files['file']
-        if file.filename == '':
-            return 'No selected file'
-        
-        filename = secure_filename(file.filename)
-        filepath = os.path.join(UPLOAD_FOLDER, filename)
-        file.save(filepath)
-
-        output_path = create_breathing_video(filepath)
-        
-        return send_file(output_path, as_attachment=True, download_name='iris_pupil_breathing.mp4')
-    
-    return render_template_string(HTML)
-
-def create_breathing_video(input_path):
-    img = cv2.imread(input_path)
+def create_real_pupil_breathing(input_image_path, output_path="real_pupil_breathing.mp4", duration=8, fps=30):
+    img = cv2.imread(input_image_path)
     if img is None:
-        raise Exception("Could not load image")
+        print("Image load failed!")
+        return False
 
     h, w = img.shape[:2]
-    
-    # Pupil detection
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    blurred = cv2.GaussianBlur(gray, (7,7), 0)
-    _, thresh = cv2.threshold(blurred, 45, 255, cv2.THRESH_BINARY_INV)
+    original = img.copy()
 
+    # Grayscale aur blur for better pupil detection
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (9, 9), 0)
+
+    # Threshold to find dark pupil area
+    _, thresh = cv2.threshold(blurred, 50, 255, cv2.THRESH_BINARY_INV)
+
+    # Find contours
     contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
-    if contours:
+
+    if not contours:
+        print("Pupil not detected, using center as fallback")
+        center = (w//2, h//2)
+        radius = int(min(w, h) * 0.18)
+    else:
+        # Largest contour as pupil
         largest = max(contours, key=cv2.contourArea)
         (x, y), radius = cv2.minEnclosingCircle(largest)
         center = (int(x), int(y))
-        pupil_radius = int(radius * 0.78)
-    else:
-        center = (w//2, h//2)
-        pupil_radius = int(min(w, h) * 0.18)
+        radius = int(radius * 0.85)
 
-    output_path = input_path.replace('.jpg', '_breathing.mp4').replace('.jpeg', '_breathing.mp4').replace('.png', '_breathing.mp4')
-    
+    print(f"Pupil detected at center: {center}, radius: {radius}")
+
+    # Video Writer
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter(output_path, fourcc, 30, (w, h))
+    out = cv2.VideoWriter(output_path, fourcc, fps, (w, h))
 
-    for i in range(240):        # 8 seconds
-        frame = img.copy()
-        scale = 1 + 0.26 * np.sin(2 * np.pi * i / 55)
-        curr_r = int(pupil_radius * scale)
+    total_frames = int(duration * fps)
 
-        overlay = frame.copy()
-        cv2.circle(overlay, center, curr_r, (0, 0, 0), -1)
-        cv2.addWeighted(overlay, 0.93, frame, 0.07, 0, frame)
+    for i in range(total_frames):
+        frame = original.copy()
 
-        # Glare for realism
-        cv2.circle(frame, (center[0]-int(curr_r*0.28), center[1]-int(curr_r*0.28)), 
-                   int(curr_r*0.22), (255,255,255), -1)
+        # Breathing scale (slow and natural)
+        scale = 1 + 0.22 * np.sin(2 * np.pi * i / (fps * 2.2))
 
-        out.write(frame)
+        new_radius = int(radius * scale)
+
+        # Create mask for pupil area
+        mask = np.zeros((h, w), dtype=np.uint8)
+        cv2.circle(mask, center, new_radius, 255, -1)
+
+        # Get the pupil region
+        pupil_region = cv2.bitwise_and(frame, frame, mask=mask)
+
+        # Resize pupil region
+        pupil_resized = cv2.resize(pupil_region, (0,0), fx=scale, fy=scale)
+
+        # Create new frame with resized pupil
+        new_frame = frame.copy()
+
+        # Calculate new position to keep center fixed
+        new_h, new_w = pupil_resized.shape[:2]
+        x1 = center[0] - new_w // 2
+        y1 = center[1] - new_h // 2
+        x2 = x1 + new_w
+        y2 = y1 + new_h
+
+        # Place resized pupil back
+        if x1 < 0 or y1 < 0 or x2 > w or y2 > h:
+            # If out of bounds, skip this frame or clip
+            pass
+        else:
+            new_frame[y1:y2, x1:x2] = pupil_resized
+
+        out.write(new_frame)
 
     out.release()
-    return output_path
+    print(f"✅ Video saved: {output_path}")
+    return True
 
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+
+# ====================== MAIN ======================
+if __name__ == "__main__":
+    print("=== Real Pupil Breathing Animation ===\n")
+    
+    Tk().withdraw()
+    file_path = filedialog.askopenfilename(
+        title="Select Iris JPG Image",
+        filetypes=[("Image files", "*.jpg *.jpeg *.png")]
+    )
+
+    if not file_path:
+        messagebox.showinfo("Cancelled", "No file selected.")
+    else:
+        output_file = "real_pupil_" + os.path.basename(file_path).rsplit('.', 1)[0] + ".mp4"
+        success = create_real_pupil_breathing(file_path, output_file, duration=8, fps=25)
+        
+        if success:
+            messagebox.showinfo("Success", f"Animation created!\nFile: {output_file}")
